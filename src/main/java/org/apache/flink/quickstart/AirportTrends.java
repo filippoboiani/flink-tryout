@@ -28,6 +28,7 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.KeyedStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.windowing.WindowFunction;
+import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.util.Collector;
@@ -36,6 +37,12 @@ import java.util.TimeZone;
 
 public class AirportTrends {
 
+    /**
+     * JFKTerminal enum
+     *
+     * Utility enum that offers a method to map a grid id to the corresponsing terminal.
+     *
+     */
     public enum JFKTerminal {
         TERMINAL_1(71436),
         TERMINAL_2(71688),
@@ -62,7 +69,8 @@ public class AirportTrends {
     /**
      * GridCellMatcher mapper
      *
-     * Map the ride to a cell and dermine wether is a ride from/to the airport.
+     * Map the ride to a cell and dermine wether is a ride from/to the airport. It also determines
+     * whether the ride has started or ended.
      *
      * */
     public static class GridCellMatcher implements MapFunction<TaxiRide, Tuple3<Integer, JFKTerminal, Boolean>> {
@@ -102,6 +110,8 @@ public class AirportTrends {
     /**
      * RideCounter window function
      *
+     * Counts the number of rides within a time window.
+     *
      * */
     private static class RideCounter implements WindowFunction<
             Tuple3<Integer, JFKTerminal, Boolean>,
@@ -120,6 +130,7 @@ public class AirportTrends {
             calendar.setTimeZone(TimeZone.getTimeZone( "America/New_York" ));
             calendar.setTimeInMillis(timeWindow.getEnd());
 
+            // get terminal enum
             JFKTerminal terminal = key.getField(0);
 
             // count the number of rides for the terminal
@@ -135,6 +146,9 @@ public class AirportTrends {
 
     /**
      * BusTerminal reducer
+     *
+     * Determine which terminal has more rides.
+     *
      * */
     private static class BestTerminal implements ReduceFunction<Tuple3<JFKTerminal, Integer, Integer>> {
         @Override
@@ -173,23 +187,28 @@ public class AirportTrends {
                 // key by TERMINAL
                 .<KeyedStream<Tuple3<Integer, JFKTerminal, Boolean>, JFKTerminal>>keyBy(1)
                 // build a 1 hour sliding window with 1 hour time size and 1 hour slide
-                .timeWindow(Time.minutes(60), Time.minutes(60))
+                .window(TumblingEventTimeWindows.of(Time.hours(1)))
                 // count the number of rides for each terminal (end of task 1)
                 .apply(new RideCounter())
                 // key by hour
                 .<KeyedStream<Tuple3<JFKTerminal, Integer, Integer>, Integer>>keyBy(2)
                 // build sliding window for all the streams with 1 hour time size and 1 hour slide
-                .timeWindowAll(Time.minutes(60), Time.minutes(60))
+                .windowAll(TumblingEventTimeWindows.of(Time.hours(1)))
                 // get the terminal with the highest number of rides (end of task 2)
                 .reduce(new BestTerminal())
+                // print out the output
                 .print();
 
         /*
-        * The time window is formed starting from the timestamps which is the timestamp related to
-        * each taxi ride. The watermarks are hadled and assigned
-        * in TaxiRideSource.
-        *
-        * /
+            The time window is formed starting from the timestamps which is the time related to
+            each taxi ride. The watermarks are hadled and assigned in TaxiRideSource. In particular the
+            TaxiRideSource class takes care of watermark emission, which depends on maxDelayInSecs
+            and servingSpeedFactor. The watermark 'time' is used to buid the time windows.
+
+            We need windows because aggregates on streams (counts, sums, etc) need a scope. In my solution I
+            use tumbling windows because we don't need the windows to be overlapped. In fact, we
+            are analysing the the events hour after hour.
+         */
 
         /*
             Task 1 output
